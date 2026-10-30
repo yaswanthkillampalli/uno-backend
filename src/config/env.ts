@@ -14,6 +14,8 @@ const EnvSchema = z.object({
         .filter(Boolean),
     )
     .pipe(z.array(z.url()).min(1)),
+  /** How long a disconnected player keeps their seat before leaving / forfeiting. */
+  DISCONNECT_GRACE_SECONDS: z.coerce.number().int().min(0).max(3600).default(60),
   SUPABASE_URL: z.url(),
   SUPABASE_SECRET_KEY: z.string().min(20),
 });

@@ -46,6 +46,7 @@ export function makeState(o: MakeOptions): GameState {
       userId: `u${i}`,
       name: `P${i}`,
       hand: [...hand],
+      lifelines: o.settings?.lifelines ?? DEFAULT_SETTINGS.lifelines,
       eliminated: false,
       eliminatedBy: null,
       eliminatedOrder: null,

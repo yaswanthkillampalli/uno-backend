@@ -1,12 +1,12 @@
-import { isProd } from '../config/env.js';
-
 type Level = 'debug' | 'info' | 'warn' | 'error';
 
 const weight: Record<Level, number> = { debug: 10, info: 20, warn: 30, error: 40 };
-const minWeight = isProd ? weight.info : weight.debug;
+// Reads NODE_ENV directly (not config/env.ts) so tests can import this without real env vars.
+const minWeight = process.env.NODE_ENV === 'production' ? weight.info : weight.debug;
+const silent = process.env.NODE_ENV === 'test';
 
 function write(level: Level, message: string, meta?: unknown): void {
-  if (weight[level] < minWeight) return;
+  if (silent || weight[level] < minWeight) return;
   const line = `${new Date().toISOString()} ${level.toUpperCase().padEnd(5)} ${message}`;
   const out = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
   if (meta === undefined) out(line);

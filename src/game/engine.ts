@@ -20,7 +20,13 @@ import {
   type PlayerState,
 } from './types.js';
 
-export const DEFAULT_SETTINGS: GameSettings = { sevenZero: true, mercyLimit: 25, handSize: 7 };
+export const DEFAULT_SETTINGS: GameSettings = {
+  sevenZero: true,
+  mercyLimit: 25,
+  handSize: 7,
+  turnSeconds: 20,
+  lifelines: 3,
+};
 export const MIN_PLAYERS = 2;
 export const MAX_PLAYERS = 6;
 
@@ -87,12 +93,19 @@ export function createGame(options: {
   if (settings.mercyLimit <= settings.handSize) {
     throw new Error('mercyLimit must be larger than handSize.');
   }
+  if (settings.turnSeconds !== 0 && !(Number.isInteger(settings.turnSeconds) && settings.turnSeconds >= 5 && settings.turnSeconds <= 300)) {
+    throw new Error('turnSeconds must be 0 (no timer) or a whole number from 5 to 300.');
+  }
+  if (!Number.isInteger(settings.lifelines) || settings.lifelines < 0 || settings.lifelines > 10) {
+    throw new Error('lifelines must be a whole number from 0 to 10.');
+  }
 
   const drawPile = shuffle(newDeck(), rng);
   const states: PlayerState[] = players.map((p) => ({
     userId: p.userId,
     name: p.name,
     hand: [],
+    lifelines: settings.lifelines,
     eliminated: false,
     eliminatedBy: null,
     eliminatedOrder: null,
@@ -182,7 +195,11 @@ function drawCount(c: Pick<Ctx, 'state' | 'rng' | 'events'>, index: number, coun
   return drawInto(c, index, (_card, n) => n >= count).cards;
 }
 
-function eliminate(c: Pick<Ctx, 'state' | 'rng' | 'events'>, index: number, reason: 'mercy' | 'left'): void {
+function eliminate(
+  c: Pick<Ctx, 'state' | 'rng' | 'events'>,
+  index: number,
+  reason: 'mercy' | 'left' | 'timeout',
+): void {
   const { state, rng, events } = c;
   const player = requirePlayer(state, index);
   if (player.eliminated) return;
@@ -195,6 +212,13 @@ function eliminate(c: Pick<Ctx, 'state' | 'rng' | 'events'>, index: number, reas
   player.eliminatedBy = reason;
   player.eliminatedOrder = state.eliminationCount++;
   events.push({ type: 'eliminated', playerId: player.userId, reason, cardCount });
+}
+
+/** Put cards under the top of the discard pile, so the top card and active color stay the same. */
+function dropUnderTop(state: GameState, cards: Card[]): void {
+  const top = state.discardPile.pop();
+  if (top) state.discardPile.push(...cards, top);
+  else state.discardPile.push(...cards);
 }
 
 function addPenalty(state: GameState, amount: number, events: GameEvent[]): void {
@@ -275,6 +299,9 @@ export function applyAction(state: GameState, action: Action, rng: Rng = secureR
       break;
     case 'forfeit':
       failure = handleForfeit(c);
+      break;
+    case 'timeout':
+      failure = handleTimeout(c);
       break;
   }
 
@@ -443,9 +470,12 @@ function handleDraw(c: Ctx): ActionFailure | null {
   const last = result.cards[result.cards.length - 1];
   events.push({ type: 'drew', playerId: player.userId, count: result.cards.length, reason: 'draw', cards: result.cards });
 
-  if (result.done && last) {
+  if (player.hand.length >= state.settings.mercyLimit) {
+    // Hit the card limit while drawing: the Mercy rule in finalize() eliminates the player.
+    state.currentIndex = nextIndex(state, index);
+  } else if (result.done && last) {
     state.mustPlayCardId = last.id;
-  } else if (player.hand.length < state.settings.mercyLimit) {
+  } else {
     // No playable card could be found anywhere: the turn passes.
     events.push({ type: 'passed', playerId: player.userId });
     state.currentIndex = nextIndex(state, index);
@@ -486,6 +516,44 @@ function handleRouletteColor(c: Ctx, color: Color): ActionFailure | null {
 
   state.prompt = null;
   state.currentIndex = nextIndex(state, index); // the victim loses their turn
+  finalize(c);
+  return null;
+}
+
+/**
+ * The turn timer ran out. The player loses a lifeline and is auto-dealt cards until they reach the
+ * card limit (even if they hold playable cards), then the last card picked up is dropped, leaving
+ * them at (limit - 1). Anything pending (penalty, drawn card, color choice) is cancelled and the
+ * turn passes. With no lifelines left, the player is out.
+ */
+function handleTimeout(c: Ctx): ActionFailure | null {
+  const { state, index, events } = c;
+  const waitingOn = state.prompt ? state.prompt.by : state.currentIndex;
+  if (index !== waitingOn) return fail('NOT_YOUR_TURN', 'That player is not the one being waited on.');
+
+  const player = requirePlayer(state, index);
+  events.push({ type: 'timed_out', playerId: player.userId });
+
+  state.pendingDraw = 0;
+  state.lastDrawValue = 0;
+  state.mustPlayCardId = null;
+  state.prompt = null;
+
+  if (player.lifelines > 0) {
+    player.lifelines -= 1;
+    const result = drawInto(c, index, () => false); // never stops early: draws to the limit
+    events.push({ type: 'drew', playerId: player.userId, count: result.cards.length, reason: 'timeout', cards: result.cards });
+    let dropped: Card[] = [];
+    if (player.hand.length >= state.settings.mercyLimit) {
+      dropped = player.hand.splice(state.settings.mercyLimit - 1);
+      dropUnderTop(state, dropped);
+    }
+    events.push({ type: 'lifeline_used', playerId: player.userId, remaining: player.lifelines, dropped });
+  } else {
+    eliminate(c, index, 'timeout');
+  }
+
+  state.currentIndex = nextIndex(state, index);
   finalize(c);
   return null;
 }

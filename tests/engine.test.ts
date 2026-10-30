@@ -438,7 +438,7 @@ describe('drawing when you cannot play', () => {
   });
 });
 
-describe('Mercy rule', () => {
+describe('Mercy rule (reaching 25 cards by drawing)', () => {
   it('eliminates a player who reaches 25 cards and returns their cards to the draw pile', () => {
     const d4 = card('R', 'd4');
     const big = Array.from({ length: 23 }, () => card('B', 'n1'));
@@ -466,6 +466,145 @@ describe('Mercy rule', () => {
     expect(s.status).toBe('finished');
     expect(s.winnerId).toBe('u0');
     expect(s.endReason).toBe('last_standing');
+  });
+});
+
+
+describe('Lifelines and the turn timer', () => {
+  const timeout = (s: GameState, who: number) => applyAction(s, { type: 'timeout', playerId: `u${who}` }, rng);
+  const totalCards = (s: GameState) =>
+    s.drawPile.length + s.discardPile.length + s.players.reduce((n, p) => n + p.hand.length, 0);
+  const hand24 = () => Array.from({ length: 24 }, () => card('B', 'n2'));
+
+  it('everyone starts with 3 and the default timer is 20 seconds', () => {
+    const s = createGame({ players: [{ userId: 'a', name: 'A' }, { userId: 'b', name: 'B' }], rng: seeded(2) });
+    expect(s.players.map((p) => p.lifelines)).toEqual([3, 3]);
+    expect(viewFor(s, 'a').players.map((p) => p.lifelines)).toEqual([3, 3]);
+    expect(viewFor(s, 'a').turnSeconds).toBe(20);
+  });
+
+  it('validates the settings', () => {
+    const two = [{ userId: 'a', name: 'A' }, { userId: 'b', name: 'B' }];
+    expect(() => createGame({ players: two, settings: { turnSeconds: 10 } })).not.toThrow();
+    expect(() => createGame({ players: two, settings: { turnSeconds: 0 } })).not.toThrow();
+    expect(() => createGame({ players: two, settings: { turnSeconds: 2 } })).toThrow();
+    expect(() => createGame({ players: two, settings: { lifelines: -1 } })).toThrow();
+  });
+
+  it('a timeout draws the player up to 25 EVEN WITH playable cards, then drops the last card', () => {
+    const playable = card('R', 'n1');
+    const s = makeState({ hands: [[playable, ...rest()], rest(), rest()], drawPile: filler(60) });
+    const before = totalCards(s);
+    const topBefore = s.discardPile.at(-1);
+    const r = timeout(s, 0);
+    expect(r.ok).toBe(true);
+    const p0 = s.players[0];
+    expect(p0?.hand.length).toBe(24); // 3 cards + 22 drawn = 25, last one dropped
+    expect(p0?.lifelines).toBe(2);
+    expect(p0?.eliminated).toBe(false);
+    expect(s.drawPile.length).toBe(60 - 22);
+    expect(s.discardPile.length).toBe(2); // the dropped card sits UNDER the top card
+    expect(s.discardPile.at(-1)).toBe(topBefore);
+    expect(totalCards(s)).toBe(before);
+    expect(s.currentIndex).toBe(1);
+    if (r.ok) {
+      expect(r.events.map((e) => e.type)).toEqual(['timed_out', 'drew', 'lifeline_used']);
+      const drew = r.events.find((e) => e.type === 'drew');
+      expect(drew && drew.type === 'drew' && drew.reason === 'timeout' && drew.count === 22).toBe(true);
+    }
+  });
+
+  it('a timeout cancels a pending penalty (the player is already topped up to the limit)', () => {
+    const s = makeState({ hands: [rest(), rest()], top: card('R', 'd4'), pending: 4, last: 4, current: 1, drawPile: filler(60) });
+    timeout(s, 1);
+    expect(s.pendingDraw).toBe(0);
+    expect(s.lastDrawValue).toBe(0);
+    expect(s.players[1]?.hand.length).toBe(24);
+    expect(s.currentIndex).toBe(0);
+  });
+
+  it('a timeout after drawing cancels the "must play" card', () => {
+    const good = card('R', 'n7');
+    const s = makeState({ hands: [[card('B', 'n3')], rest()], drawPile: [good], settings: { sevenZero: false } });
+    draw(s, 0);
+    expect(s.mustPlayCardId).toBe(good.id);
+    timeout(s, 0);
+    expect(s.mustPlayCardId).toBeNull();
+    expect(s.currentIndex).toBe(1);
+  });
+
+  it('a player already at 24 cards just loses the lifeline (they draw one and drop it)', () => {
+    const s = makeState({ hands: [hand24(), rest()], drawPile: filler(10) });
+    timeout(s, 0);
+    expect(s.players[0]?.hand.length).toBe(24);
+    expect(s.players[0]?.lifelines).toBe(2);
+  });
+
+  it('after 3 lifelines are used, the next timeout is an automatic exit', () => {
+    const s = makeState({ hands: [rest(), rest(), rest()], drawPile: filler(80) });
+    for (let used = 1; used <= 3; used++) {
+      s.currentIndex = 0;
+      expect(timeout(s, 0).ok).toBe(true);
+      expect(s.players[0]?.eliminated).toBe(false);
+      expect(s.players[0]?.lifelines).toBe(3 - used);
+    }
+    s.currentIndex = 0;
+    const before = totalCards(s);
+    const r = timeout(s, 0);
+    expect(r.ok && r.events.some((e) => e.type === 'eliminated' && e.reason === 'timeout')).toBe(true);
+    expect(s.players[0]?.eliminated).toBe(true);
+    expect(s.players[0]?.eliminatedBy).toBe('timeout');
+    expect(s.players[0]?.hand).toEqual([]);
+    expect(totalCards(s)).toBe(before); // their cards went back into the draw pile
+    expect(s.status).toBe('playing');
+    expect(s.currentIndex).toBe(1);
+  });
+
+  it('the last player standing wins when the other times out for good', () => {
+    const s = makeState({ hands: [rest(), rest()], settings: { lifelines: 0 } });
+    timeout(s, 0);
+    expect(s.status).toBe('finished');
+    expect(s.winnerId).toBe('u1');
+  });
+
+  it('only the player being waited on can time out', () => {
+    const s = makeState({ hands: [rest(), rest()] });
+    const before = structuredClone(s);
+    const r = timeout(s, 1);
+    expect(!r.ok && r.code).toBe('NOT_YOUR_TURN');
+    expect(s).toEqual(before);
+  });
+
+  it('a Color Roulette victim who times out is penalised, the prompt closes and play moves on', () => {
+    const cr = card('W', 'cr');
+    const s = makeState({ hands: [[cr, ...rest()], rest(), rest()], drawPile: filler(60) });
+    play(s, 0, cr);
+    expect(s.prompt?.by).toBe(1);
+    expect(timeout(s, 0).ok).toBe(false); // the origin is not who we are waiting for
+    expect(timeout(s, 1).ok).toBe(true);
+    expect(s.prompt).toBeNull();
+    expect(s.players[1]?.hand.length).toBe(24);
+    expect(s.players[1]?.lifelines).toBe(2);
+    expect(s.activeColor).toBe('R'); // no color was chosen, so it is unchanged
+    expect(s.currentIndex).toBe(2);
+  });
+
+  it('if the piles run dry the player keeps what was drawn and nothing is dropped', () => {
+    const s = makeState({ hands: [rest(), rest()], drawPile: filler(5) });
+    const r = timeout(s, 0);
+    expect(r.ok).toBe(true);
+    expect(s.players[0]?.hand.length).toBe(7);
+    expect(s.players[0]?.lifelines).toBe(2);
+    expect(r.ok && r.events.some((e) => e.type === 'lifeline_used' && e.dropped.length === 0)).toBe(true);
+  });
+
+  it('lifelines do NOT protect against reaching 25 cards through penalties (classic Mercy)', () => {
+    const d4 = card('R', 'd4');
+    const s = makeState({ hands: [[d4, ...rest()], hand24()], drawPile: filler(20) });
+    play(s, 0, d4);
+    take(s, 1);
+    expect(s.players[1]?.eliminated).toBe(true);
+    expect(s.players[1]?.lifelines).toBe(3);
   });
 });
 
@@ -543,11 +682,12 @@ describe('what each player is allowed to see', () => {
 
 describe('simulation: random bots play whole games', () => {
   it('keeps all 168 cards, never throws, and every game finishes', () => {
-    for (let seed = 1; seed <= 150; seed++) {
+    for (let seed = 1; seed <= 200; seed++) {
       const r = seeded(seed);
       const n = 2 + (seed % 5);
       const s = createGame({
         players: Array.from({ length: n }, (_, i) => ({ userId: `u${i}`, name: `P${i}` })),
+        settings: { lifelines: seed % 2 === 0 ? 3 : 0 }, // half the games with lifelines, half classic Mercy
         rng: r,
       });
 
@@ -561,7 +701,9 @@ describe('simulation: random bots play whole games', () => {
         if (!view) throw new Error('no view');
 
         let action: Action;
-        if (s.prompt) {
+        if (r(12) === 0) {
+          action = { type: 'timeout', playerId: who.userId };
+        } else if (s.prompt) {
           action = { type: 'chooseRouletteColor', playerId: who.userId, color: COLORS[r(4)] ?? 'R' };
         } else if (view.playableCardIds.length > 0 && !(view.canTakePenalty && r(5) === 0)) {
           const id = view.playableCardIds[r(view.playableCardIds.length)] ?? '';

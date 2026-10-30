@@ -29,17 +29,23 @@ export interface Card {
 export interface GameSettings {
   /** 7 = swap hands with a player of your choice, 0 = every hand moves one seat. */
   sevenZero: boolean;
-  /** A player holding this many cards (or more) is eliminated. */
+  /** A player holding this many cards (or more) is eliminated (Mercy rule). */
   mercyLimit: number;
   handSize: number;
+  /** Seconds a player has to act. 0 = no timer. The timer itself runs in the room layer. */
+  turnSeconds: number;
+  /** Timeouts a player can survive. Each one auto-draws them to the card limit (see 'timeout'). */
+  lifelines: number;
 }
 
 export interface PlayerState {
   userId: string;
   name: string;
   hand: Card[];
+  /** Timeouts this player can still survive. */
+  lifelines: number;
   eliminated: boolean;
-  eliminatedBy: 'mercy' | 'left' | null;
+  eliminatedBy: 'mercy' | 'left' | 'timeout' | null;
   /** 0 for the first player eliminated, 1 for the next, and so on. */
   eliminatedOrder: number | null;
 }
@@ -86,7 +92,12 @@ export type Action =
   | { type: 'draw'; playerId: string }
   | { type: 'takePenalty'; playerId: string }
   | { type: 'chooseRouletteColor'; playerId: string; color: Color }
-  | { type: 'forfeit'; playerId: string };
+  | { type: 'forfeit'; playerId: string }
+  /**
+   * SERVER ONLY. Sent by the room's turn timer when a player runs out of time. Never accept
+   * this action from a socket: a client could otherwise time out other players.
+   */
+  | { type: 'timeout'; playerId: string };
 
 export type ErrorCode =
   | 'GAME_OVER'
@@ -111,7 +122,7 @@ export type GameEvent =
   | { type: 'color_chosen'; playerId: string; color: Color }
   | { type: 'penalty_stacked'; amount: number; total: number }
   /** `cards` is PRIVATE to playerId. Use redactEvent() before sending to others. */
-  | { type: 'drew'; playerId: string; count: number; reason: 'draw' | 'penalty' | 'roulette'; cards?: Card[] }
+  | { type: 'drew'; playerId: string; count: number; reason: 'draw' | 'penalty' | 'roulette' | 'timeout'; cards?: Card[] }
   | { type: 'discarded_all'; playerId: string; color: Color; cards: Card[] }
   | { type: 'direction_reversed'; direction: 1 | -1 }
   | { type: 'skipped'; playerIds: string[] }
@@ -120,7 +131,10 @@ export type GameEvent =
   | { type: 'roulette_started'; playerId: string; by: string }
   | { type: 'passed'; playerId: string }
   | { type: 'reshuffled' }
-  | { type: 'eliminated'; playerId: string; reason: 'mercy' | 'left'; cardCount: number }
+  | { type: 'timed_out'; playerId: string }
+  /** A timeout cost one lifeline. The last card picked up was dropped to the discard pile (public). */
+  | { type: 'lifeline_used'; playerId: string; remaining: number; dropped: Card[] }
+  | { type: 'eliminated'; playerId: string; reason: 'mercy' | 'left' | 'timeout'; cardCount: number }
   | { type: 'game_over'; winnerId: string | null; reason: 'empty_hand' | 'last_standing' };
 
 export interface ActionSuccess {

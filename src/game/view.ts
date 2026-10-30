@@ -7,8 +7,9 @@ export interface PublicPlayer {
   name: string;
   seat: number;
   cardCount: number;
+  lifelines: number;
   eliminated: boolean;
-  eliminatedBy: 'mercy' | 'left' | null;
+  eliminatedBy: 'mercy' | 'left' | 'timeout' | null;
 }
 
 export interface Standing {
@@ -26,6 +27,8 @@ export interface GameView {
   players: PublicPlayer[];
   /** Whose action the game is waiting for (the Roulette victim while a color choice is open). */
   turnPlayerId: string | null;
+  /** Seconds per turn (0 = no timer). The room layer adds the actual deadline. */
+  turnSeconds: number;
   direction: 1 | -1;
   activeColor: Color;
   topCard: Card;
@@ -108,10 +111,12 @@ export function viewFor(state: GameState, userId: string): GameView {
       name: p.name,
       seat: i,
       cardCount: p.hand.length,
+      lifelines: p.lifelines,
       eliminated: p.eliminated,
       eliminatedBy: p.eliminatedBy,
     })),
     turnPlayerId: turnPlayer?.userId ?? null,
+    turnSeconds: state.settings.turnSeconds,
     direction: state.direction,
     activeColor: state.activeColor,
     topCard: topCard(state),
