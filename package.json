@@ -11,7 +11,8 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node --env-file-if-exists=.env dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "smoke": "tsx --env-file=.env scripts/smoke.ts"
   },
   "keywords": [],
   "author": "",
