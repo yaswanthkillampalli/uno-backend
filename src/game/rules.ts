@@ -33,7 +33,7 @@ const no = (message: string): PlayCheck => ({ ok: false, message });
 
 const COLOR_NAME: Record<Color, string> = { R: 'Red', Y: 'Yellow', G: 'Green', B: 'Blue' };
 
-/** Can `card` be played right now? Ported from the rule tester's chk(). */
+/** Can `card` be played right now? Official rule: match the top card's color, number or symbol. */
 export function checkPlay(card: Card, ctx: PlayContext): PlayCheck {
   // 1. A penalty is pending: only a draw card of equal or higher value (any color) may be stacked.
   if (ctx.pendingDraw > 0) {
@@ -46,19 +46,18 @@ export function checkPlay(card: Card, ctx: PlayContext): PlayCheck {
   }
   // 2. Wilds are always playable.
   if (card.color === 'W') return OK;
-  // 3. A power card may be played on any power card, whatever the color.
-  if (isPowerType(ctx.top.type) && isPowerType(card.type)) return OK;
-  // 4. Numbers: match the active color, or the same number as the top card.
+  // 3. Numbers: match the active color, or the same number as the top card.
   if (isNumberType(card.type)) {
     return card.color === ctx.activeColor || (isNumberType(ctx.top.type) && card.type === ctx.top.type)
       ? OK
       : no(`Number card must match the active color (${COLOR_NAME[ctx.activeColor]}) or the top number.`);
   }
-  // 5. Colored action cards need the active color.
-  return card.color === ctx.activeColor
+  // 4. Colored action cards: match the active color, or the same symbol as the top card
+  //    (Skip on Skip, Reverse on Reverse, ... in any color). After a wild, only the chosen color counts.
+  return card.color === ctx.activeColor || card.type === ctx.top.type
     ? OK
     : no(
-        `Colored action cards need the active color (${COLOR_NAME[ctx.activeColor]}) unless the top card is also a power card.`,
+        `Action cards need the active color (${COLOR_NAME[ctx.activeColor]}) or the same symbol as the top card.`,
       );
 }
 

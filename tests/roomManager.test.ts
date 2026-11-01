@@ -396,6 +396,54 @@ describe('restart recovery', () => {
   });
 });
 
+describe('restart recovery: messy storage', () => {
+  it('a player stored in two rooms keeps the one with the running game', async () => {
+    const { manager, repo } = await lobby({ settings: { turnSeconds: 0 } });
+    manager.startGame(alice.id);
+    await manager.flush();
+    // A stale leftover room that still lists alice, stored BEFORE the real one.
+    repo.rooms = new Map([
+      ['stale', { id: 'stale', code: 'STALE2', hostId: 'alice', maxPlayers: 4, settings: { sevenZero: true, turnSeconds: 0, lifelines: 3 }, status: 'playing' as const }],
+      ...repo.rooms,
+    ]);
+    repo.players.set('stale', new Map([['alice', { seat: 0, isReady: true }]]));
+
+    const notifier2 = new RecordingNotifier();
+    const manager2 = new RoomManager({ repo, notifier: notifier2, graceMs: 60_000 });
+    expect(await manager2.restore()).toEqual({ rooms: 1, games: 1 });
+    await manager2.flush();
+    expect(repo.rooms.get('stale')?.status).toBe('closed');
+    expect(repo.players.get('stale')?.size).toBe(0);
+
+    manager2.connect(alice.id);
+    const session = notifier2.last('alice', 'session:restore');
+    expect(session.room.code).toBe('AAAAAA');
+    expect(session.game.state.status).toBe('playing');
+  });
+
+  it('shutting the server down does not kick anyone out of a running game', async () => {
+    const repo = new FakeRepo();
+    for (const u of [alice, bob]) repo.profiles.set(u.id, u.username);
+    const notifier = new RecordingNotifier();
+    const manager = new RoomManager({ repo, notifier, graceMs: 0, rng: seeded(2), codeGenerator: () => 'AAAAAA' });
+    manager.connect(alice.id);
+    manager.connect(bob.id);
+    await manager.createRoom(alice, { settings: { turnSeconds: 0 } });
+    manager.joinRoom(bob, 'AAAAAA');
+    manager.setReady(bob.id, true);
+    manager.startGame(alice.id);
+
+    await manager.shutdown();
+    manager.disconnect(alice.id); // sockets close while the server is stopping
+    manager.disconnect(bob.id);
+    vi.advanceTimersByTime(5_000);
+    await manager.flush();
+
+    expect(latestGame(notifier, 'alice').state.status).toBe('playing');
+    expect([...repo.games.values()][0]?.status).toBe('playing');
+  });
+});
+
 describe('database trouble', () => {
   it('the game keeps running in memory if a database write fails', async () => {
     const { manager, notifier, repo } = await lobby({ settings: { turnSeconds: 0 } });

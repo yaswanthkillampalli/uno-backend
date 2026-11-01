@@ -76,15 +76,19 @@ describe('checkPlay (ported from the rule tester)', () => {
     expect(checkPlay(card('B', 'n2'), ctx(top, 'R')).ok).toBe(false);
   });
 
-  it('colored action cards need the active color unless the top card is a power card', () => {
+  it('colored action cards need the active color or the same symbol as the top card', () => {
     expect(checkPlay(card('B', 'sk'), ctx(card('R', 'n5'), 'R')).ok).toBe(false);
-    expect(checkPlay(card('R', 'sk'), ctx(card('R', 'n5'), 'R')).ok).toBe(true);
-    expect(checkPlay(card('B', 'sk'), ctx(card('R', 'rv'), 'R')).ok).toBe(true);
-    expect(checkPlay(card('B', 'd2'), ctx(card('W', 'w6'), 'R')).ok).toBe(true);
+    expect(checkPlay(card('R', 'sk'), ctx(card('R', 'n5'), 'R')).ok).toBe(true); // active color
+    expect(checkPlay(card('B', 'sk'), ctx(card('R', 'sk'), 'R')).ok).toBe(true); // same symbol, other color
+    expect(checkPlay(card('B', 'da'), ctx(card('Y', 'da'), 'Y')).ok).toBe(true);
+    expect(checkPlay(card('B', 'sk'), ctx(card('R', 'rv'), 'R')).ok).toBe(false); // different symbol, other color
+    expect(checkPlay(card('B', 'd2'), ctx(card('R', 'd4'), 'R')).ok).toBe(false); // +2 is not +4
   });
 
-  it('a number card cannot be played on a power card of another color', () => {
-    expect(checkPlay(card('B', 'n3'), ctx(card('R', 'rv'), 'R')).ok).toBe(false);
+  it('after a wild only the chosen color counts for colored cards', () => {
+    expect(checkPlay(card('B', 'd2'), ctx(card('W', 'w6'), 'R')).ok).toBe(false);
+    expect(checkPlay(card('R', 'd2'), ctx(card('W', 'w6'), 'R')).ok).toBe(true);
+    expect(checkPlay(card('B', 'n3'), ctx(card('W', 'cr'), 'R')).ok).toBe(false);
   });
 
   it('wilds are always playable (when no penalty is pending)', () => {
@@ -262,12 +266,26 @@ describe('skip, skip all, reverse', () => {
     expect(s.currentIndex).toBe(2);
   });
 
-  it('Reverse +4 with 2 players: the OPPONENT faces the +4 (the tester let the player hit themselves)', () => {
+  it('Reverse +4 with 2 players skips the other player: YOU face the +4 (official rule)', () => {
     const w4r = card('W', 'w4r');
-    const s = makeState({ hands: [[w4r, ...rest()], rest()] });
+    const s = makeState({ hands: [[w4r, ...rest()], rest()], drawPile: filler(20) });
     play(s, 0, w4r, { color: 'G' });
-    expect(s.currentIndex).toBe(1);
+    expect(s.currentIndex).toBe(0);
     expect(s.pendingDraw).toBe(4);
+    expect(s.direction).toBe(-1);
+    expect(take(s, 0).ok).toBe(true);
+    expect(s.players[0]?.hand.length).toBe(2 + 4);
+    expect(s.currentIndex).toBe(1);
+  });
+
+  it('...and you can stack a draw card of equal or higher value to send it back', () => {
+    const w4r = card('W', 'w4r');
+    const back = card('B', 'd4');
+    const s = makeState({ hands: [[w4r, back, ...rest()], rest()], drawPile: filler(20) });
+    play(s, 0, w4r, { color: 'G' });
+    expect(play(s, 0, back).ok).toBe(true);
+    expect(s.pendingDraw).toBe(8);
+    expect(s.currentIndex).toBe(1);
   });
 
   it('eliminated players are skipped in turn order', () => {
@@ -412,6 +430,30 @@ describe('drawing when you cannot play', () => {
     expect(play(s, 0, good).ok).toBe(true);
     expect(s.mustPlayCardId).toBeNull();
     expect(s.currentIndex).toBe(1);
+  });
+
+  it('after drawing, playing any OTHER card is refused with a clear reason', () => {
+    const stuck = card('B', 'n3');
+    const good = card('R', 'n7');
+    const s = makeState({ hands: [[stuck, card('B', 'n4')], rest()], drawPile: [good], settings: { sevenZero: false } });
+    draw(s, 0);
+    const r = play(s, 0, stuck);
+    expect(!r.ok && r.code).toBe('MUST_PLAY_DRAWN_CARD');
+    expect(s.players[0]?.hand).toContain(stuck);
+  });
+
+  it('drawing into 25 cards eliminates the player (Mercy) and the game moves on', () => {
+    const twentyFour = Array.from({ length: 24 }, () => card('B', 'n2'));
+    const unplayable = card('G', 'n9');
+    const s = makeState({ hands: [twentyFour, rest(), rest()], drawPile: [unplayable] });
+    const before = s.drawPile.length + s.discardPile.length + s.players.reduce((n, p) => n + p.hand.length, 0);
+    const r = draw(s, 0);
+    expect(r.ok && r.events.some((e) => e.type === 'eliminated' && e.reason === 'mercy')).toBe(true);
+    expect(s.players[0]?.eliminated).toBe(true);
+    expect(s.currentIndex).toBe(1);
+    expect(s.mustPlayCardId).toBeNull();
+    expect(s.status).toBe('playing');
+    expect(s.drawPile.length + s.discardPile.length + s.players.reduce((n, p) => n + p.hand.length, 0)).toBe(before);
   });
 
   it('is refused when you already have a playable card', () => {

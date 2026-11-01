@@ -55,6 +55,8 @@ export class RoomManager {
   private readonly connections = new Map<string, number>();
   private readonly mutex = new KeyedMutex();
   private readonly inflight = new Set<Promise<void>>();
+  /** Once true, disconnects no longer start grace timers: closing the server must never kick players out. */
+  private shuttingDown = false;
 
   constructor(options: ManagerOptions) {
     this.repo = options.repo;
@@ -80,6 +82,7 @@ export class RoomManager {
   }
 
   disconnect(userId: string): void {
+    if (this.shuttingDown) return;
     const remaining = (this.connections.get(userId) ?? 1) - 1;
     if (remaining > 0) {
       this.connections.set(userId, remaining);
@@ -100,9 +103,10 @@ export class RoomManager {
 
   private startGrace(room: LiveRoom, member: Member): void {
     this.clearGrace(member);
+    if (this.shuttingDown) return;
     member.graceTimer = setTimeout(() => {
       member.graceTimer = null;
-      if (room.closed || !room.members.has(member.userId) || this.isConnected(member.userId)) return;
+      if (this.shuttingDown || room.closed || !room.members.has(member.userId) || this.isConnected(member.userId)) return;
       logger.info(`Grace period over, removing ${member.username} from room ${room.code}`);
       this.removeMember(room, member.userId, 'disconnected');
     }, this.graceMs);
@@ -482,10 +486,32 @@ export class RoomManager {
   /** Rebuild rooms and running games after a server restart. Everyone starts offline with a grace period. */
   async restore(): Promise<{ rooms: number; games: number }> {
     const persisted = await this.repo.loadActiveRooms();
+    // Rooms with a running game go first. If a player is stored in two rooms (stale rows left by a
+    // crash or an interrupted write), they keep the room with the live game.
+    persisted.sort((x, y) => Number(y.game !== null) - Number(x.game !== null));
+
     let games = 0;
     for (const p of persisted) {
       const room = this.rebuildRoom(p);
+
+      let lostPlayers = false;
+      for (const member of [...room.members.values()]) {
+        if (!this.userRoom.has(member.userId)) continue;
+        lostPlayers = true;
+        logger.warn(`${member.username} is stored in two rooms; dropping the stale entry from room ${room.code}`);
+        room.members.delete(member.userId);
+        this.persist(room, () => this.repo.deleteRoomPlayer(room.id, member.userId));
+      }
+      if (lostPlayers && room.game) {
+        // A running game that lost players can't be continued safely.
+        const gameId = room.game.id;
+        room.game = null;
+        this.persist(room, () => this.repo.abortGame(gameId));
+        this.persist(room, () => this.repo.updateRoom(room.id, { status: 'lobby' }));
+      }
+
       if (room.members.size === 0) {
+        logger.info(`Room ${room.code}: nobody is left in it, closing it`);
         this.closeRoom(room);
         continue;
       }
@@ -498,6 +524,10 @@ export class RoomManager {
         games++;
         this.armTimer(room);
       }
+      logger.info(
+        `Restored room ${room.code}: ${room.members.size} player(s), ` +
+          (room.game ? `game at move ${room.game.state.version}` : 'in the lobby'),
+      );
     }
     return { rooms: this.byCode.size, games };
   }
@@ -546,6 +576,7 @@ export class RoomManager {
 
   /** Stop all timers. Rooms and games stay in the database and are restored on the next boot. */
   async shutdown(): Promise<void> {
+    this.shuttingDown = true;
     for (const room of this.byCode.values()) {
       this.clearTurnTimer(room);
       for (const member of room.members.values()) this.clearGrace(member);

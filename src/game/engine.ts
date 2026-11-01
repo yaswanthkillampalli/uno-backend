@@ -395,8 +395,10 @@ function handlePlay(c: Ctx, action: Extract<Action, { type: 'play' }>): ActionFa
       state.direction = state.direction === 1 ? -1 : 1;
       events.push({ type: 'direction_reversed', direction: state.direction });
       addPenalty(state, 4, events);
-      // The penalty goes to the next player in the NEW direction (with 2 players: the opponent).
-      state.currentIndex = nextIndex(state, index);
+      // The penalty goes to the next player in the NEW direction. With only 2 players the Reverse
+      // skips the other player, so YOU face your own +4 (official rule) and may stack a draw card
+      // of equal or higher value to send it back.
+      state.currentIndex = aliveIndexes(state).length === 2 ? index : nextIndex(state, index);
       break;
     case 'sk': {
       events.push({ type: 'skipped', playerIds: [idOf(nextIndex(state, index))] });

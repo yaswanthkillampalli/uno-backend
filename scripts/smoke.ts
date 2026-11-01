@@ -11,6 +11,7 @@ import {
   ask,
   connectPlayer,
   disconnectAll,
+  leaveLeftoverRooms,
   must,
   playToEnd,
   restartScenario,
@@ -71,7 +72,22 @@ async function ensureUser(n: number): Promise<Player> {
 }
 
 // ---------- database checks ------------------------------------------------------------
+/** The server writes to the database in the background, so retry until it has caught up (max ~15 s). */
 async function databaseChecks(
+  code: string,
+  players: Player[],
+  expect: { gameStatus: 'finished'; roomStatus: 'lobby' | 'closed'; results: boolean },
+): Promise<Check[]> {
+  let checks: Check[] = [];
+  for (let attempt = 0; attempt < 30; attempt++) {
+    checks = await databaseChecksOnce(code, players, expect);
+    if (checks.every((c) => c.ok)) break;
+    await sleep(500);
+  }
+  return checks;
+}
+
+async function databaseChecksOnce(
   code: string,
   players: Player[],
   expect: { gameStatus: 'finished'; roomStatus: 'lobby' | 'closed'; results: boolean },
@@ -98,14 +114,8 @@ async function databaseChecks(
     check('room_players: emptied when everyone left', (seats.data?.length ?? 0) === 0, `rows=${seats.data?.length}`);
   }
 
-  // Database writes are queued behind the game, so give them a moment.
-  let game: { id: string; status: string; version: number; finished_at: string | null } | null = null;
-  for (let i = 0; i < 40; i++) {
-    const g = await admin.from('games').select('id, status, version, finished_at').eq('room_id', room.data.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
-    game = g.data;
-    if (game?.status === expect.gameStatus) break;
-    await sleep(250);
-  }
+  const g = await admin.from('games').select('id, status, version, finished_at').eq('room_id', room.data.id).order('started_at', { ascending: false }).limit(1).maybeSingle();
+  const game: { id: string; status: string; version: number; finished_at: string | null } | null = g.data;
   check('games: the game was saved', !!game);
   check(`games: status is "${expect.gameStatus}" with a finish time`, game?.status === expect.gameStatus && !!game.finished_at, `status=${game?.status}`);
   check('games: the snapshot has been updated during play', (game?.version ?? 0) > 0, `version=${game?.version}`);
@@ -141,6 +151,7 @@ async function main(): Promise<Check[]> {
 
     for (const p of players) clients.push(await connectPlayer(serverUrl, p));
     check('auth: real Supabase tokens are accepted', clients.every((c) => c.socket.connected));
+    await leaveLeftoverRooms(clients, log);
 
     if (mode === 'timer') {
       const code = await setupGame(clients, { turnSeconds: 5 }, log);
@@ -165,7 +176,13 @@ async function main(): Promise<Check[]> {
     const code = await setupGame(clients, { turnSeconds: 0 }, log);
 
     if (mode === 'restart') {
-      checks.push(...(await restartScenario(clients, log)));
+      const restartChecks = await restartScenario(clients, log);
+      checks.push(...restartChecks);
+      for (const c of restartChecks.filter((x) => !x.ok)) log(`FAIL: ${c.name}${c.detail ? ` (${c.detail})` : ''}`);
+      if (restartChecks.some((x) => !x.ok)) {
+        log('The restart did not bring the game back, so there is nothing to finish. Stopping here.');
+        return finish(code, checks);
+      }
       log('finishing the game after the restart...');
     }
 

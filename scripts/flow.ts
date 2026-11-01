@@ -101,6 +101,28 @@ export async function must(reply: Promise<Reply>, what: string): Promise<any> {
   return r.data;
 }
 
+/** One line per client: what room and game it currently believes it is in. */
+export function describeClients(clients: Client[]): string {
+  return clients
+    .map((c) => {
+      const g = c.game?.state;
+      return `  ${c.name}: connected=${c.socket.connected} room=${c.room?.code ?? 'none'} phase=${c.room?.phase ?? '-'} ` +
+        `game=${g ? `v${g.version} ${g.status} turn=${g.turnPlayerId === c.userId ? 'me' : g.turnPlayerId ?? '-'}` : 'none'}`;
+    })
+    .join('\n');
+}
+
+/** Leaves any room a previous (possibly crashed) run left behind, so the test starts clean. */
+export async function leaveLeftoverRooms(clients: Client[], log: (msg: string) => void): Promise<void> {
+  for (const c of clients) {
+    const session = await must(ask(c, 'session:sync'), 'session:sync');
+    if (session?.room) {
+      log(`${c.name} was still in room ${session.room.code} from an earlier run, leaving it`);
+      await must(ask(c, 'room:leave'), 'room:leave');
+    }
+  }
+}
+
 export function disconnectAll(clients: Client[]): void {
   for (const c of clients) c.socket.close();
 }
@@ -142,7 +164,9 @@ export async function playOneMove(clients: Client[]): Promise<string> {
     },
     15_000,
     'a player to be asked to act',
-  );
+  ).catch((error: unknown) => {
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\nWhat each player currently sees:\n${describeClients(clients)}`);
+  });
   const state = actor.game!.state;
   const you = state.you!;
   const pick = <T>(list: readonly T[]): T => list[Math.floor(Math.random() * list.length)] as T;
@@ -229,7 +253,11 @@ export async function restartScenario(
     120_000,
     'the server to come back and restore the session',
   );
-  log('server is back');
+  log('server is back. What each player got back:');
+  for (const c of clients) {
+    const r = c.restores.at(-1);
+    log(`  ${c.name}: room=${r?.room?.code ?? 'none'} phase=${r?.room?.phase ?? '-'} game=${r?.game ? `v${r.game.state.version} ${r.game.state.status}` : 'none'}`);
+  }
 
   clients.forEach((c, i) => {
     const b = before[i]!;
