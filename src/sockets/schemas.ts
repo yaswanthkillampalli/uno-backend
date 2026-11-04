@@ -28,6 +28,7 @@ export const joinRoomSchema = z.strictObject({
 });
 
 export const readySchema = z.strictObject({ ready: z.boolean() });
+export const kickPlayerSchema = z.strictObject({ userId: z.string().min(1).max(64) });
 
 export const roomSettingsSchema = z.strictObject({
   maxPlayers: z.number().int().min(2).max(6).optional(),

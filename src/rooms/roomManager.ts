@@ -40,7 +40,7 @@ export interface ManagerOptions {
 }
 
 // No 0/O/1/I so codes are easy to read out loud.
-const makeCode = customAlphabet('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 6);
+const makeCode = customAlphabet('1023456789', 6);
 
 export class RoomManager {
   private readonly repo: RoomRepo;
@@ -184,6 +184,17 @@ export class RoomManager {
     return ok();
   }
 
+  kickPlayer(hostId: string, targetId: string): Result {
+    const room = this.userRoom.get(hostId);
+    if (!room) return err('NOT_IN_ROOM', 'You are not in a room.');
+    if (room.hostId !== hostId) return err('NOT_HOST', 'Only the host can remove players.');
+    if (this.phase(room) === 'playing') return err('ROOM_IN_PROGRESS', 'Players cannot be removed after the game starts.');
+    if (targetId === hostId) return err('CANNOT_KICK_HOST', 'The host cannot remove themselves.');
+    if (!room.members.has(targetId)) return err('PLAYER_NOT_FOUND', 'That player is no longer in the room.');
+    this.removeMember(room, targetId, 'kicked');
+    return ok();
+  }
+
   setReady(userId: string, ready: boolean): Result<RoomView> {
     const room = this.userRoom.get(userId);
     const member = room?.members.get(userId);
@@ -223,7 +234,7 @@ export class RoomManager {
   }
 
   /** Removes a player. Mid-game this is a forfeit (their cards go back to the draw pile). */
-  private removeMember(room: LiveRoom, userId: string, reason: 'left' | 'disconnected'): void {
+  private removeMember(room: LiveRoom, userId: string, reason: 'left' | 'disconnected' | 'kicked'): void {
     const member = room.members.get(userId);
     if (!member) return;
     this.clearGrace(member);

@@ -41,6 +41,7 @@ Error codes: `VALIDATION`, `RATE_LIMITED` (max 40 requests per 10 s), `INTERNAL`
 | `room:create` | `{ maxPlayers?: 2-6, settings?: { sevenZero?: boolean, turnSeconds?: 0 or 5-300, lifelines?: 0-10 } }` | `data` = RoomView. `ALREADY_IN_ROOM` |
 | `room:join` | `{ code }` | `data` = RoomView. `ROOM_NOT_FOUND`, `ROOM_FULL`, `ROOM_IN_PROGRESS`, `ALREADY_IN_ROOM` |
 | `room:leave` | none | In a game this is a forfeit. `NOT_IN_ROOM` |
+| `room:kick` | `{ userId }` | Host only, lobby only. Removes the selected player. `NOT_HOST`, `ROOM_IN_PROGRESS`, `PLAYER_NOT_FOUND` |
 | `room:ready` | `{ ready: boolean }` | The host is always ready. |
 | `room:settings` | `{ maxPlayers?, settings? }` | Host only, lobby only. `NOT_HOST`, `ROOM_TOO_SMALL` |
 | `room:start` | none | Host only. `NOT_HOST`, `NOT_ENOUGH_PLAYERS`, `PLAYERS_NOT_READY`, `PLAYER_OFFLINE`, `ROOM_IN_PROGRESS` |
@@ -59,7 +60,7 @@ There is no request for timeouts or forfeits: the server's timer and `room:leave
 | `session:restore` | Right after every connect | `{ room: RoomView \| null, game: GamePayload \| null }`. Rebuild your whole UI from this. |
 | `room:state` | Lobby changes, players joining/leaving, going online/offline, game start/end | `RoomView` |
 | `game:update` | After every game action | `GamePayload` |
-| `room:left` | You were removed from the room | `{ code, reason: 'left' \| 'disconnected' }` |
+| `room:left` | You left, were kicked, or disconnected past the grace period | `{ code, reason: 'left' \| 'kicked' \| 'disconnected' }` |
 
 ```ts
 RoomView = {

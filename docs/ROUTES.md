@@ -105,6 +105,10 @@ Success data is a `RoomView`. Expected errors: `ROOM_NOT_FOUND`, `ROOM_FULL`, `R
 
 Leaves the current room. No payload. During a running game this is a forfeit. Expected error: `NOT_IN_ROOM`.
 
+### `room:kick`
+
+Payload: `{ userId: string }`. Host-only and lobby-only. Removes the selected player and notifies them with `room:left` reason `kicked`. Expected errors: `NOT_IN_ROOM`, `NOT_HOST`, `ROOM_IN_PROGRESS`, `CANNOT_KICK_HOST`, `PLAYER_NOT_FOUND`.
+
 ### `room:ready`
 
 Sets the caller's lobby readiness.
@@ -174,6 +178,6 @@ These are notifications, not request routes; clients listen for them and do not 
 | `session:restore` | `{ room: RoomView \| null, game: GamePayload \| null }`, sent after connecting. |
 | `room:state` | `RoomView`, sent for lobby/player/presence/game phase changes. |
 | `game:update` | `GamePayload`, sent after game actions and state changes. |
-| `room:left` | `{ code, reason: 'left' \| 'disconnected' }`, when removed from a room. |
+| `room:left` | `{ code, reason: 'left' \| 'kicked' \| 'disconnected' }`, when removed from a room. |
 
 `RoomView` contains room code, phase, host, capacity, settings, player presence/readiness, and `hasGame`. `GamePayload` contains the caller-filtered game view, events, server clock, and optional turn deadline. Other players' hands are never included. See [PROTOCOL.md](./PROTOCOL.md) for complete game view, card/event definitions, countdown handling, and presence behavior.
